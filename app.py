@@ -25,6 +25,7 @@ import json
 import secrets
 import shutil
 import threading
+from datetime import datetime
 from pathlib import Path
 
 from flask import (Flask, abort, jsonify, redirect, render_template, request,
@@ -69,6 +70,70 @@ def list_images(folder: Path):
         return []
     names.sort(key=lambda s: s.lower())
     return names
+
+
+# EXIF tag ids (Pillow uses numeric ids, same as exiftool's DateTimeOriginal)
+_EXIF_ORIGINAL = 36867
+_EXIF_DATETIME = 306
+
+
+def _parse_exif_datetime(value) -> datetime | None:
+    if not value or not isinstance(value, str):
+        return None
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(value.strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def image_capture_datetime(path: Path) -> datetime:
+    """Best capture timestamp for sorting: DateTimeOriginal → DateTime → mtime."""
+    try:
+        with Image.open(path) as im:
+            exif = im.getexif()
+            if exif:
+                for tag in (_EXIF_ORIGINAL, _EXIF_DATETIME):
+                    dt = _parse_exif_datetime(exif.get(tag))
+                    if dt:
+                        return dt
+    except Exception:
+        pass
+    try:
+        return datetime.fromtimestamp(path.stat().st_mtime)
+    except OSError:
+        return datetime.min
+
+
+def sort_names_by_capture_time(folder: Path, names: list[str]) -> list[str]:
+    return sorted(names, key=lambda n: (image_capture_datetime(folder / n), n.lower()))
+
+
+def ensure_upload_order(sess: dict, folder: Path, names: list[str]) -> bool:
+    """
+    Persist capture-time order as decision['u'] (uploadIndex) once per session.
+    New files discovered later are appended after the existing order, sorted
+    among themselves by capture time.
+    """
+    decisions = sess.setdefault("decisions", {})
+    changed = False
+
+    if sess.get("upload_sort") == "exif":
+        missing = [n for n in names if "u" not in decisions.get(n, {})]
+        if not missing:
+            return False
+        max_u = max((d.get("u", -1) for d in decisions.values()), default=-1)
+        for i, name in enumerate(sort_names_by_capture_time(folder, missing),
+                                 start=max_u + 1):
+            decisions.setdefault(name, {})["u"] = i
+        return True
+
+    for i, name in enumerate(sort_names_by_capture_time(folder, names)):
+        decisions.setdefault(name, {})["u"] = i
+        changed = True
+    sess["upload_sort"] = "exif"
+    return changed
 
 
 # --------------------------------------------------------------------------- #
@@ -121,11 +186,14 @@ def build_photo_list(sid: str) -> dict:
 
     Each photo: {name, status, mark, flagged, order, uploadIndex}
       status: 'seq' (selected) | 'src' (all uploaded / undecided) | 'cut' (rejected)
+      uploadIndex: persisted capture-time order (EXIF DateTimeOriginal, set once)
     New files (not yet in the session) default to 'src' so they surface for review.
     """
     sess = load_session(sid)
     folder = Path(sess.get("folder", ""))
     names = list_images(folder)
+    if ensure_upload_order(sess, folder, names):
+        save_session(sid, sess)
     decisions = sess.get("decisions", {})
 
     photos = []
@@ -140,7 +208,7 @@ def build_photo_list(sid: str) -> dict:
             "mark": d.get("m") if d.get("m") in ("flag", "star") else None,
             "flagged": bool(d.get("f", False)),
             "order": d.get("o", 10 ** 9),
-            "uploadIndex": i,
+            "uploadIndex": d.get("u", i),
         })
 
     photos.sort(key=lambda p: (p["order"], p["uploadIndex"]))
@@ -320,13 +388,18 @@ def api_save():
     sess = load_session(sid)                      # validates existence
 
     decisions = {}
+    prev = sess.get("decisions", {})
     for i, p in enumerate(data.get("photos", [])):
-        decisions[p["name"]] = {
+        old = prev.get(p["name"], {})
+        entry = {
             "o": i,
             "s": p.get("status", "src"),
             "m": p.get("mark"),
             "f": bool(p.get("flagged", False)),
         }
+        if "u" in old:
+            entry["u"] = old["u"]
+        decisions[p["name"]] = entry
     sess["decisions"] = decisions
     sess["target"] = data.get("target", sess.get("target", 500))
     save_session(sid, sess)
