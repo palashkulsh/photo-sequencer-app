@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Photo Sequencer</title>
+<link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body class="mode-v2">
+
+<header>
+  <h1>📷 Photo Sequencer</h1>
+  <div class="chips" id="chips"></div>
+  <div class="spacer"></div>
+  <button id="btnFolder" title="Pick a different folder">📁 Folder</button>
+  <button id="btnTarget">Target: 500</button>
+  <button id="btnShuffle" title="Shuffle selected order">Shuffle</button>
+  <button id="btnHelp">? Help</button>
+  <button class="primary" id="btnExport">Export</button>
+  <span class="saveflag" id="saveflag"></span>
+</header>
+
+<main>
+  <div class="stage">
+    <div class="preview" id="preview">
+      <button class="navbtn left"  id="navPrev">‹</button>
+      <span class="pos" id="pos"></span>
+      <img id="bigImg" alt="" />
+      <span class="fname" id="fname"></span>
+      <button class="navbtn right" id="navNext">›</button>
+    </div>
+    <div class="actions" id="actionsV2"></div>
+  </div>
+</main>
+
+<footer>
+  <div class="dualstrips">
+    <div class="lane" id="laneSelected">
+      <div class="lanehdr"><b style="color:var(--keep)">✓ Selected sequence</b>
+        <span class="muted">— drag in from below · reorder here · this order IS your final order</span>
+        <span style="flex:1"></span><span class="muted" id="selInfo"></span></div>
+      <div class="strip" id="stripSelected"></div>
+    </div>
+    <div class="lane" id="laneSource">
+      <div class="lanehdr"><b>All uploaded</b>
+        <span class="muted">— drag up to select, or down to reject · click to preview · Flag / Star are reference-only</span>
+        <span style="flex:1"></span><span class="muted" id="srcInfo"></span></div>
+      <div class="strip" id="stripSource"></div>
+    </div>
+    <div class="lane" id="laneReject">
+      <div class="lanehdr"><b style="color:var(--cut)">✕ Reject</b>
+        <span class="muted">— drag uploaded photos here to reject · preview to send one back</span>
+        <span style="flex:1"></span><span class="muted" id="rejInfo"></span></div>
+      <div class="strip" id="stripReject"></div>
+    </div>
+  </div>
+</footer>
+
+<!-- folder picker -->
+<div id="picker" class="overlay">
+  <div class="pbox">
+    <h2>Choose a photo folder</h2>
+    <p class="muted">Browse the machine running this app. Nothing is uploaded — images are read directly from disk.</p>
+    <div class="precent" id="pRecent" style="display:none"></div>
+    <div class="pcur"><span class="muted">Current:</span> <span id="pPath"></span>
+      <span class="pcount" id="pCount"></span></div>
+    <div class="plist" id="pList"></div>
+    <div class="pactions">
+      <button id="pUp">↑ Parent</button>
+      <span style="flex:1"></span>
+      <button class="primary" id="pOpen">Open this folder</button>
+    </div>
+  </div>
+</div>
+
+<!-- export dialog -->
+<div id="exportDlg" class="overlay">
+  <div class="pbox">
+    <h2>Export selected sequence</h2>
+    <p class="muted" id="expSummary"></p>
+    <div class="expopts">
+      <label><input type="radio" name="expmode" value="copy" checked>
+        <b>Copy files</b> — copy the selected photos, renamed with position numbers,
+        into a new <code>_selected_sequence/</code> folder inside your photo folder.</label>
+      <label><input type="radio" name="expmode" value="manifest">
+        <b>Manifest only</b> — just write <code>sequence.txt</code> (the ordered filename list), copy nothing.</label>
+    </div>
+    <div class="pactions">
+      <button id="expCancel">Cancel</button>
+      <span style="flex:1"></span>
+      <button class="primary" id="expGo">Export</button>
+    </div>
+    <p class="muted" id="expResult" style="margin-top:12px"></p>
+  </div>
+</div>
+
+<!-- help -->
+<div id="help" class="overlay">
+  <div class="pbox">
+    <h2>Help</h2>
+    <table class="helptbl">
+      <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Previous / next photo within the current tray</td></tr>
+      <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Nudge the current selected photo earlier / later</td></tr>
+      <tr><td><kbd>Home</kbd>/<kbd>End</kbd></td><td>Jump to start / end of the current tray</td></tr>
+    </table>
+    <p class="muted" style="font-size:12px">
+      A photo lives in exactly one tray. Drag moves it there. Selected photos can't be dragged
+      straight to Reject — send them to All uploaded first. In All uploaded, the orange <b>Flag</b>
+      and yellow <b>Star</b> are reference markers only — they tag the thumbnail but move nothing.
+      Decisions auto-save into the folder. Close with Esc.
+    </p>
+    <div style="text-align:right"><button id="helpClose">Close</button></div>
+  </div>
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

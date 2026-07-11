@@ -1,0 +1,363 @@
+"""
+Photo Sequencer — local web app (Version 2: three trays).
+
+Sort & cull a large photo folder down to a target count, sequencing and
+eliminating at the same time. Images stay on disk: the browser never uploads
+anything. This Flask backend reads the folder the user picks, serves cached
+thumbnails, and persists everything in a per-session JSON file so a refresh
+(or coming back to the same URL later) restores the full curation state.
+
+Sessions:
+    Opening a folder creates a session with a short id and a shareable URL:
+        http://127.0.0.1:5000/session/<id>
+    All state for that session lives in  sessions/<id>.json  and is restored
+    whenever that URL is loaded.
+
+Run:
+    pip install flask pillow
+    python app.py
+Then open http://127.0.0.1:5000
+"""
+
+from __future__ import annotations
+
+import json
+import secrets
+import shutil
+import threading
+from pathlib import Path
+
+from flask import (Flask, abort, jsonify, redirect, render_template, request,
+                   send_file, send_from_directory)
+
+try:
+    from PIL import Image, ImageOps
+except ImportError:  # pragma: no cover
+    raise SystemExit("Pillow is required. Install with:  pip install pillow")
+
+app = Flask(__name__)
+
+IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".heic"}
+THUMB_DIR = ".photo-sequencer-thumbs"         # thumbnail cache inside the chosen folder
+THUMB_MAX = 400                               # px, longest edge
+STATE_VERSION = 2
+
+APP_DIR = Path(__file__).resolve().parent
+SESSIONS_DIR = APP_DIR / "sessions"
+SESSIONS_DIR.mkdir(exist_ok=True)
+
+_lock = threading.Lock()                       # guards session file writes
+
+
+# --------------------------------------------------------------------------- #
+# Filesystem helpers
+# --------------------------------------------------------------------------- #
+def is_image(name: str) -> bool:
+    return Path(name).suffix.lower() in IMAGE_EXTS
+
+
+def list_images(folder: Path):
+    """Image filenames directly inside *folder*, sorted case-insensitively."""
+    try:
+        names = [f.name for f in folder.iterdir()
+                 if f.is_file() and is_image(f.name)]
+    except (PermissionError, FileNotFoundError):
+        return []
+    names.sort(key=lambda s: s.lower())
+    return names
+
+
+# --------------------------------------------------------------------------- #
+# Session storage
+# --------------------------------------------------------------------------- #
+def new_session_id() -> str:
+    """Short, URL-safe, collision-checked id."""
+    while True:
+        sid = secrets.token_urlsafe(5).replace("_", "").replace("-", "")[:8].lower()
+        if sid and not session_path(sid).exists():
+            return sid
+
+
+def session_path(sid: str) -> Path:
+    # keep ids to a safe charset so they can't escape the sessions dir
+    safe = "".join(c for c in sid if c.isalnum())
+    if not safe:
+        abort(400, description="Invalid session id")
+    return SESSIONS_DIR / f"{safe}.json"
+
+
+def load_session(sid: str) -> dict:
+    p = session_path(sid)
+    if not p.exists():
+        abort(404, description="Session not found")
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        abort(500, description="Session file is corrupt")
+
+
+def save_session(sid: str, data: dict) -> None:
+    data["version"] = STATE_VERSION
+    with _lock:
+        tmp = session_path(sid).with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=1), encoding="utf-8")
+        tmp.replace(session_path(sid))
+
+
+def session_folder(sid: str) -> Path:
+    folder = Path(load_session(sid).get("folder", ""))
+    if not folder.is_dir():
+        abort(410, description="The folder for this session is no longer available")
+    return folder
+
+
+def build_photo_list(sid: str) -> dict:
+    """
+    Merge on-disk images with the session's saved decisions into the UI payload.
+
+    Each photo: {name, status, mark, flagged, order, uploadIndex}
+      status: 'seq' (selected) | 'src' (all uploaded / undecided) | 'cut' (rejected)
+    New files (not yet in the session) default to 'src' so they surface for review.
+    """
+    sess = load_session(sid)
+    folder = Path(sess.get("folder", ""))
+    names = list_images(folder)
+    decisions = sess.get("decisions", {})
+
+    photos = []
+    for i, name in enumerate(names):
+        d = decisions.get(name, {})
+        status = d.get("s")
+        if status not in ("seq", "src", "cut"):
+            status = "src"
+        photos.append({
+            "name": name,
+            "status": status,
+            "mark": d.get("m") if d.get("m") in ("flag", "star") else None,
+            "flagged": bool(d.get("f", False)),
+            "order": d.get("o", 10 ** 9),
+            "uploadIndex": i,
+        })
+
+    photos.sort(key=lambda p: (p["order"], p["uploadIndex"]))
+    return {
+        "session": sid,
+        "folder": str(folder),
+        "folder_ok": folder.is_dir(),
+        "target": sess.get("target", 500),
+        "photos": photos,
+        "count": len(photos),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# Thumbnails
+# --------------------------------------------------------------------------- #
+def thumb_cache_dir(folder: Path) -> Path:
+    d = folder / THUMB_DIR
+    d.mkdir(exist_ok=True)
+    return d
+
+
+def get_thumbnail(folder: Path, name: str) -> Path:
+    src = folder / name
+    if not src.exists():
+        abort(404)
+    cache = thumb_cache_dir(folder)
+    st = src.stat()
+    key = f"{Path(name).stem}_{int(st.st_mtime)}_{st.st_size}.jpg"
+    dst = cache / key
+    if dst.exists():
+        return dst
+    try:
+        with Image.open(src) as im:
+            im = ImageOps.exif_transpose(im)
+            im.thumbnail((THUMB_MAX, THUMB_MAX))
+            if im.mode not in ("RGB", "L"):
+                im = im.convert("RGB")
+            im.save(dst, "JPEG", quality=82)
+    except Exception:
+        return src
+    return dst
+
+
+# --------------------------------------------------------------------------- #
+# Routes: page
+# --------------------------------------------------------------------------- #
+@app.route("/")
+def index():
+    return render_template("index.html")
+
+
+@app.route("/session/<sid>")
+def session_page(sid):
+    # Same SPA; the frontend reads the id from the URL and restores state.
+    return render_template("index.html")
+
+
+@app.route("/static/<path:fn>")
+def static_files(fn):
+    return send_from_directory(app.static_folder, fn)
+
+
+# --------------------------------------------------------------------------- #
+# Routes: folder browsing (native picker replacement)
+# --------------------------------------------------------------------------- #
+@app.route("/api/browse")
+def api_browse():
+    raw = request.args.get("path", "")
+    base = Path(raw).expanduser() if raw else Path.home()
+    try:
+        base = base.resolve()
+    except OSError:
+        base = Path.home()
+    if not base.is_dir():
+        base = Path.home()
+
+    dirs = []
+    try:
+        for entry in sorted(base.iterdir(), key=lambda e: e.name.lower()):
+            if entry.name.startswith("."):
+                continue
+            if entry.is_dir():
+                dirs.append(entry.name)
+    except PermissionError:
+        pass
+
+    parent = str(base.parent) if base.parent != base else None
+    return jsonify({
+        "path": str(base),
+        "parent": parent,
+        "dirs": dirs,
+        "image_count": len(list_images(base)),
+    })
+
+
+# --------------------------------------------------------------------------- #
+# Routes: sessions
+# --------------------------------------------------------------------------- #
+@app.route("/api/open", methods=["POST"])
+def api_open():
+    """Select a folder → create a new session and return its state + id."""
+    data = request.get_json(force=True)
+    folder = Path(data.get("path", "")).expanduser()
+    try:
+        folder = folder.resolve()
+    except OSError:
+        abort(400, description="Invalid path")
+    if not folder.is_dir():
+        abort(400, description="Not a directory")
+
+    sid = new_session_id()
+    save_session(sid, {"folder": str(folder), "target": 500, "decisions": {}})
+    return jsonify(build_photo_list(sid))
+
+
+@app.route("/api/session/<sid>")
+def api_session(sid):
+    """Restore an existing session (used on page load / refresh)."""
+    return jsonify(build_photo_list(sid))
+
+
+@app.route("/api/sessions")
+def api_sessions():
+    """List known sessions (for a 'recent' list on the picker)."""
+    out = []
+    for p in sorted(SESSIONS_DIR.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True):
+        try:
+            s = json.loads(p.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue
+        dec = s.get("decisions", {})
+        selected = sum(1 for d in dec.values() if d.get("s") == "seq")
+        out.append({
+            "session": p.stem,
+            "folder": s.get("folder", ""),
+            "folder_ok": Path(s.get("folder", "")).is_dir(),
+            "target": s.get("target", 500),
+            "selected": selected,
+            "decided": len(dec),
+        })
+    return jsonify({"sessions": out})
+
+
+@app.route("/api/save", methods=["POST"])
+def api_save():
+    """Persist the full decision set for a session."""
+    data = request.get_json(force=True)
+    sid = data.get("session")
+    if not sid:
+        abort(400, description="Missing session id")
+    sess = load_session(sid)                      # validates existence
+
+    decisions = {}
+    for i, p in enumerate(data.get("photos", [])):
+        decisions[p["name"]] = {
+            "o": i,
+            "s": p.get("status", "src"),
+            "m": p.get("mark"),
+            "f": bool(p.get("flagged", False)),
+        }
+    sess["decisions"] = decisions
+    sess["target"] = data.get("target", sess.get("target", 500))
+    save_session(sid, sess)
+    return jsonify({"ok": True})
+
+
+# --------------------------------------------------------------------------- #
+# Routes: images (session-scoped)
+# --------------------------------------------------------------------------- #
+@app.route("/api/thumb/<sid>/<path:name>")
+def api_thumb(sid, name):
+    folder = session_folder(sid)
+    if not is_image(name):
+        abort(404)
+    return send_file(get_thumbnail(folder, name), mimetype="image/jpeg", max_age=86400)
+
+
+@app.route("/api/full/<sid>/<path:name>")
+def api_full(sid, name):
+    folder = session_folder(sid)
+    src = folder / name
+    if not src.exists() or not is_image(name):
+        abort(404)
+    return send_file(src, max_age=3600)
+
+
+# --------------------------------------------------------------------------- #
+# Routes: export
+# --------------------------------------------------------------------------- #
+@app.route("/api/export", methods=["POST"])
+def api_export():
+    data = request.get_json(force=True)
+    sid = data.get("session")
+    if not sid:
+        abort(400, description="Missing session id")
+    folder = session_folder(sid)
+    ordered = data.get("selected", [])
+    mode = data.get("mode", "copy")
+
+    out = folder / "_selected_sequence"
+    out.mkdir(exist_ok=True)
+
+    lines = [f"# Photo Sequence Export — {len(ordered)} photos", ""]
+    pad = max(4, len(str(len(ordered))))
+    copied = 0
+    for i, name in enumerate(ordered, 1):
+        src = folder / name
+        lines.append(f"{str(i).zfill(pad)}\t{name}")
+        if mode == "copy" and src.exists():
+            try:
+                shutil.copy2(src, out / f"{str(i).zfill(pad)}_{name}")
+                copied += 1
+            except OSError:
+                pass
+
+    (out / "sequence.txt").write_text("\n".join(lines), encoding="utf-8")
+    return jsonify({"ok": True, "out": str(out), "copied": copied,
+                    "total": len(ordered), "mode": mode})
+
+
+if __name__ == "__main__":
+    print("\n  📷 Photo Sequencer running at  http://127.0.0.1:5000\n")
+    app.run(host="127.0.0.1", port=5000, debug=False)

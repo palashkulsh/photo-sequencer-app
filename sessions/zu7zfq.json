@@ -1,0 +1,187 @@
+{
+ "folder": "/Users/ikulshreshtha/Photos",
+ "target": 500,
+ "decisions": {
+  "1722336930709_11zon.jpg": {
+   "o": 0,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "1723529031325.jpg": {
+   "o": 1,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "giphy3-ezgif.com-webp-to-gif-converter.gif": {
+   "o": 2,
+   "s": "cut",
+   "m": null,
+   "f": false
+  },
+  "IMG_0003.JPG": {
+   "o": 3,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0009.HEIC": {
+   "o": 4,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0010.HEIC": {
+   "o": 5,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0011.HEIC": {
+   "o": 6,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0012.HEIC": {
+   "o": 7,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0016.HEIC": {
+   "o": 8,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0017.HEIC": {
+   "o": 9,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0018.HEIC": {
+   "o": 10,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0019.HEIC": {
+   "o": 11,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0020.HEIC": {
+   "o": 12,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0021.HEIC": {
+   "o": 13,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0022.HEIC": {
+   "o": 14,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0023.HEIC": {
+   "o": 15,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0024.HEIC": {
+   "o": 16,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0031.HEIC": {
+   "o": 17,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0032.HEIC": {
+   "o": 18,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0033.HEIC": {
+   "o": 19,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0034.HEIC": {
+   "o": 20,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0035.HEIC": {
+   "o": 21,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0036.HEIC": {
+   "o": 22,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0037.HEIC": {
+   "o": 23,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0039.HEIC": {
+   "o": 24,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "IMG_0040.HEIC": {
+   "o": 25,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "Screenshot 2025-03-09 at 10.03.30\u202fPM.png": {
+   "o": 26,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "Screenshot 2025-03-09 at 10.03.58\u202fPM.png": {
+   "o": 27,
+   "s": "src",
+   "m": null,
+   "f": false
+  },
+  "002.jpg": {
+   "o": 28,
+   "s": "seq",
+   "m": null,
+   "f": false
+  },
+  "1722336930709.jpg": {
+   "o": 29,
+   "s": "seq",
+   "m": null,
+   "f": false
+  }
+ },
+ "version": 2
+}
