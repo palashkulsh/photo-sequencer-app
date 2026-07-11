@@ -25,6 +25,10 @@
     <div class="preview" id="preview">
       <button class="navbtn left"  id="navPrev">‹</button>
       <span class="pos" id="pos"></span>
+      <div class="previewtools">
+        <button class="ptool" id="btnZoom" title="Cycle zoom: normal → compact trays → minimal trays">🔍 Zoom</button>
+        <button class="ptool" id="btnFullscreen" title="View preview fullscreen">⛶ Full</button>
+      </div>
       <img id="bigImg" alt="" />
       <span class="fname" id="fname"></span>
       <button class="navbtn right" id="navNext">›</button>
@@ -49,8 +53,10 @@
     </div>
     <div class="lane" id="laneReject">
       <div class="lanehdr"><b style="color:var(--cut)">✕ Reject</b>
-        <span class="muted">— drag uploaded photos here to reject · preview to send one back</span>
-        <span style="flex:1"></span><span class="muted" id="rejInfo"></span></div>
+        <span class="muted lanehint">— drag uploaded photos here to reject · preview to send one back</span>
+        <span style="flex:1"></span>
+        <button class="lanebtn" id="btnRejectCollapse" title="Collapse or expand rejected panel">▾ Rejected</button>
+        <span class="muted" id="rejInfo"></span></div>
       <div class="strip" id="stripReject"></div>
     </div>
   </div>
@@ -100,14 +106,19 @@
     <h2>Help</h2>
     <table class="helptbl">
       <tr><td><kbd>←</kbd> <kbd>→</kbd></td><td>Previous / next photo within the current tray</td></tr>
+      <tr><td><kbd>↑</kbd></td><td>Add to selected (from All uploaded or Reject)</td></tr>
+      <tr><td><kbd>↓</kbd></td><td>Reject the current photo (from All uploaded or Selected)</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo the last action (up to 30 steps)</td></tr>
       <tr><td><kbd>[</kbd> / <kbd>]</kbd></td><td>Nudge the current selected photo earlier / later</td></tr>
       <tr><td><kbd>Home</kbd>/<kbd>End</kbd></td><td>Jump to start / end of the current tray</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Exit fullscreen or close dialogs</td></tr>
     </table>
     <p class="muted" style="font-size:12px">
-      A photo lives in exactly one tray. Drag moves it there. Selected photos can't be dragged
-      straight to Reject — send them to All uploaded first. In All uploaded, the orange <b>Flag</b>
-      and yellow <b>Star</b> are reference markers only — they tag the thumbnail but move nothing.
-      Decisions auto-save into the folder. Close with Esc.
+      A photo lives in exactly one tray. Drag moves it there — drop on the <b>＋</b> slot at the end
+      of Selected to append to the sequence. Use <b>Zoom</b> to enlarge the preview and shrink trays,
+      or <b>Full</b> for fullscreen. Collapse the Reject panel for more preview space.
+      In All uploaded, the orange <b>Flag</b> and yellow <b>Star</b> are reference markers only.
+      Decisions auto-save. Close dialogs with Esc.
     </p>
     <div style="text-align:right"><button id="helpClose">Close</button></div>
   </div>

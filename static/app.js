@@ -7,6 +7,10 @@ let currentId = null;
 let target = 500;
 let cutCounter = 0;
 let sessionId = null;   // set when a folder is opened or a session is restored
+let zoomMode = 0;       // 0 = normal, 1 = compact trays, 2 = minimal trays
+let rejectCollapsed = false;
+const UNDO_MAX = 30;
+let undoStack = [];
 
 const thumbURL   = name => `/api/thumb/${sessionId}/${encodeURIComponent(name)}`;
 const previewURL = name => `/api/preview/${sessionId}/${encodeURIComponent(name)}`;
@@ -27,6 +31,7 @@ function loadPayload(data){
     name: p.name, status: p.status, mark: p.mark,
     flagged: !!p.flagged, uploadIndex: p.uploadIndex,
   }));
+  undoStack = [];
   const first = srcList()[0] || seq()[0] || photos[0];
   currentId = first ? first.id : null;
   renderAll();
@@ -54,6 +59,32 @@ function flashSaved(){
 }
 
 /* ------------------------------------------------------------------ */
+/* undo                                                                */
+/* ------------------------------------------------------------------ */
+function snapshotState(){
+  return {
+    photos: photos.map(p=>({...p})),
+    currentId,
+    target,
+    cutCounter,
+  };
+}
+function pushUndo(){
+  undoStack.push(snapshotState());
+  if(undoStack.length > UNDO_MAX) undoStack.shift();
+}
+function undo(){
+  if(!undoStack.length) return;
+  const snap = undoStack.pop();
+  photos = snap.photos;
+  currentId = snap.currentId;
+  target = snap.target;
+  cutCounter = snap.cutCounter;
+  renderAll();
+  scheduleSave();
+}
+
+/* ------------------------------------------------------------------ */
 /* list helpers                                                        */
 /* ------------------------------------------------------------------ */
 const seq     = () => photos.filter(p=>p.status==='seq');
@@ -65,6 +96,11 @@ const byId = id => photos.find(p=>p.id===id);
 function currentList(){
   const p=byId(currentId); if(!p) return srcList();
   return p.status==='seq' ? seq() : p.status==='src' ? srcList() : rejList();
+}
+function insertAtEndOfSeq(item){
+  const s = seq();
+  if(s.length) photos.splice(idx(s[s.length-1].id)+1, 0, item);
+  else photos.unshift(item);
 }
 
 /* ------------------------------------------------------------------ */
@@ -94,9 +130,13 @@ function jump(where){
 /* ------------------------------------------------------------------ */
 function setBucket(id, targetStatus, focusId){
   const p=byId(id); if(!p) return;
-  if(p.status==='seq' && targetStatus==='cut'){ flashPreview('var(--cut)'); return; }
+  if(p.status===targetStatus) return;
+  pushUndo();
   p.status=targetStatus;
-  if(targetStatus==='seq'){ const from=idx(id); const m=photos.splice(from,1)[0]; photos.push(m); }
+  if(targetStatus==='seq'){
+    const from=idx(id); const m=photos.splice(from,1)[0];
+    insertAtEndOfSeq(m);
+  }
   if(targetStatus==='cut'){ p.cutSeq=++cutCounter; }
   currentId = (focusId!==undefined)?focusId:id;
   renderAll(); scheduleSave();
@@ -104,13 +144,24 @@ function setBucket(id, targetStatus, focusId){
 function dropIntoSelected(targetId){
   if(!dragId||dragId===targetId) return;
   const p=byId(dragId); if(!p) return;
+  pushUndo();
   p.status='seq';
   const from=idx(dragId); photos.splice(from,1);
   photos.splice(idx(targetId),0,p);
   currentId=p.id; renderAll(); scheduleSave();
 }
+function dropAtEndOfSelected(){
+  if(!dragId) return;
+  const p=byId(dragId); if(!p) return;
+  pushUndo();
+  p.status='seq';
+  const from=idx(dragId); const item=photos.splice(from,1)[0];
+  insertAtEndOfSeq(item);
+  currentId=p.id; renderAll(); scheduleSave();
+}
 function onDropReorder(targetId){
   if(!dragId||dragId===targetId) return;
+  pushUndo();
   const from=idx(dragId), moving=photos[from];
   photos.splice(from,1);
   photos.splice(idx(targetId),0,moving);
@@ -118,6 +169,7 @@ function onDropReorder(targetId){
 }
 function toggleMark(id, kind){
   const p=byId(id); if(!p||p.status!=='src') return;
+  pushUndo();
   p.mark=(p.mark===kind)?null:kind;
   const cell=document.querySelector('.cell[data-id="'+CSS.escape(id)+'"]');
   if(cell){ cell.classList.remove('mark-flag','mark-star'); if(p.mark) cell.classList.add('mark-'+p.mark);
@@ -128,22 +180,74 @@ function nudge(delta){
   const p=byId(currentId); if(!p||p.status!=='seq') return;
   const s=seq(); const si=seqIndex(currentId); const tgt=si+delta;
   if(tgt<0||tgt>=s.length) return;
+  pushUndo();
   const neighbor=s[tgt]; const from=idx(p.id); photos.splice(from,1);
   const to=idx(neighbor.id)+(delta>0?1:0); photos.splice(to,0,p);
   renderAll(); scheduleSave();
+}
+function keyboardSelect(){
+  const p=byId(currentId); if(!p) return;
+  if(p.status==='src'){
+    const nxt=()=>{ const n=nextInList(srcList(),p.id); return n?n.id:p.id; };
+    setBucket(p.id,'seq',nxt());
+  } else if(p.status==='cut'){
+    setBucket(p.id,'seq');
+  }
+}
+function keyboardReject(){
+  const p=byId(currentId); if(!p) return;
+  if(p.status==='src'){
+    const nxt=()=>{ const n=nextInList(srcList(),p.id); return n?n.id:p.id; };
+    setBucket(p.id,'cut',nxt());
+  } else if(p.status==='seq'){
+    const nxt=()=>{ const n=nextInList(seq(),p.id); return n?n.id:p.id; };
+    setBucket(p.id,'cut',nxt());
+  }
 }
 
 /* ------------------------------------------------------------------ */
 /* drag plumbing                                                       */
 /* ------------------------------------------------------------------ */
 let dragId=null;
-function onDragStart(e,id){ dragId=id; e.dataTransfer.effectAllowed='move'; e.currentTarget.classList.add('dragging'); }
-function onDragEnd(e){ e.currentTarget.classList.remove('dragging'); dragId=null; document.querySelectorAll('.cell.dragover').forEach(c=>c.classList.remove('dragover')); }
+function onDragStart(e,id){ dragId=id; e.dataTransfer.effectAllowed='move'; e.currentTarget.classList.add('dragging'); document.body.classList.add('drag-active'); }
+function onDragEnd(e){
+  e.currentTarget.classList.remove('dragging'); dragId=null;
+  document.body.classList.remove('drag-active','reject-drag-hover');
+  document.querySelectorAll('.cell.dragover,.drop-end.dragover').forEach(c=>c.classList.remove('dragover'));
+  document.querySelectorAll('.lane.dropready').forEach(l=>l.classList.remove('dropready'));
+}
+
+/* ------------------------------------------------------------------ */
+/* view modes                                                          */
+/* ------------------------------------------------------------------ */
+function applyViewModes(){
+  document.body.classList.toggle('zoom-1', zoomMode===1);
+  document.body.classList.toggle('zoom-2', zoomMode>=2);
+  document.body.classList.toggle('reject-collapsed', rejectCollapsed);
+  const zl=$("#btnZoom"); if(zl) zl.textContent = zoomMode===0 ? '🔍 Zoom' : zoomMode===1 ? '🔍 Zoom+' : '🔍 Max';
+  const rc=$("#btnRejectCollapse"); if(rc) rc.textContent = rejectCollapsed ? '▸ Rejected' : '▾ Rejected';
+}
+function cycleZoom(){
+  zoomMode = (zoomMode + 1) % 3;
+  applyViewModes();
+}
+function toggleRejectCollapse(){
+  rejectCollapsed = !rejectCollapsed;
+  applyViewModes();
+}
+async function toggleFullscreen(){
+  const pv=$("#preview");
+  if(!document.fullscreenElement){
+    try{ await pv.requestFullscreen(); }catch(e){ /* ignore */ }
+  } else {
+    try{ await document.exitFullscreen(); }catch(e){ /* ignore */ }
+  }
+}
 
 /* ------------------------------------------------------------------ */
 /* rendering                                                           */
 /* ------------------------------------------------------------------ */
-function renderAll(){ renderPreview(); renderChips(); renderSelected(); renderSource(); renderReject(); }
+function renderAll(){ renderPreview(); renderChips(); renderSelected(); renderSource(); renderReject(); applyViewModes(); }
 
 function buildCell(p, label, extraClass){
   const cell=document.createElement('div');
@@ -158,6 +262,12 @@ function buildCell(p, label, extraClass){
   cell.ondragstart=e=>onDragStart(e,p.id);
   cell.ondragend=onDragEnd;
   return cell;
+}
+
+function wireDropTarget(el, onDrop){
+  el.ondragover=e=>{ if(!dragId) return; e.preventDefault(); el.classList.add('dragover'); };
+  el.ondragleave=()=>el.classList.remove('dragover');
+  el.ondrop=e=>{ if(!dragId) return; e.preventDefault(); e.stopPropagation(); el.classList.remove('dragover'); onDrop(); };
 }
 
 function renderPreview(){
@@ -195,7 +305,11 @@ function renderActions(p){
       mkBtn('✓ Add to selected','keep',()=>setBucket(p.id,'seq',nxt()))
     );
   } else if(p.status==='seq'){
-    bar.append(mkBtn('↓ Move to all uploaded','',()=>setBucket(p.id,'src')));
+    const nxt=()=>{ const n=nextInList(seq(),p.id); return n?n.id:p.id; };
+    bar.append(
+      mkBtn('✕ Reject','cut',()=>setBucket(p.id,'cut',nxt())),
+      mkBtn('↓ Move to all uploaded','',()=>setBucket(p.id,'src'))
+    );
   } else {
     bar.append(
       mkBtn('↑ Move to all uploaded','',()=>setBucket(p.id,'src')),
@@ -209,15 +323,26 @@ function renderSelected(){
   const strip=$("#stripSelected"); const s=seq();
   $("#selInfo").textContent=`${s.length} selected`;
   strip.textContent='';
-  if(!s.length){ laneEmpty(strip,'Drag photos up from “All uploaded” to add them here, then drag to reorder.'); return; }
+  if(!s.length){
+    const dropEnd=document.createElement('div');
+    dropEnd.className='drop-end drop-end-only';
+    dropEnd.textContent='Drop here to add to selected sequence';
+    wireDropTarget(dropEnd, dropAtEndOfSelected);
+    strip.appendChild(dropEnd);
+    return;
+  }
   const frag=document.createDocumentFragment();
   s.forEach((p,i)=>{
     const cell=buildCell(p,i+1);
-    cell.ondragover=e=>{e.preventDefault(); cell.classList.add('dragover');};
-    cell.ondragleave=()=>cell.classList.remove('dragover');
-    cell.ondrop=e=>{e.preventDefault(); e.stopPropagation(); cell.classList.remove('dragover'); dropIntoSelected(p.id);};
+    wireDropTarget(cell, ()=>dropIntoSelected(p.id));
     frag.appendChild(cell);
   });
+  const dropEnd=document.createElement('div');
+  dropEnd.className='drop-end';
+  dropEnd.title='Drop here to add at end of sequence';
+  dropEnd.textContent='＋';
+  wireDropTarget(dropEnd, dropAtEndOfSelected);
+  frag.appendChild(dropEnd);
   strip.appendChild(frag);
 }
 function renderSource(){
@@ -242,7 +367,6 @@ function renderReject(){
 function renderChips(){
   const inSeq=seq().length, rej=rejList().length, src=srcList().length, total=photos.length;
   const need=inSeq-target;
-  const flagged=photos.filter(p=>p.flagged).length;
   const box=$("#chips"); box.textContent='';
   const chip=(t,cls)=>{ const s=document.createElement('span'); s.className='chip'+(cls?' '+cls:''); s.textContent=t; return s; };
   let cls,label;
@@ -349,8 +473,9 @@ $("#expCancel").onclick=()=>$("#exportDlg").classList.remove('show');
 $("#expGo").onclick=runExport;
 $("#btnHelp").onclick=()=>$("#help").classList.add('show');
 $("#helpClose").onclick=()=>$("#help").classList.remove('show');
-$("#btnTarget").onclick=()=>{ const v=prompt("Target number of photos in the final sequence?",target); if(v&&+v>0){ target=+v; renderChips(); scheduleSave(); } };
+$("#btnTarget").onclick=()=>{ const v=prompt("Target number of photos in the final sequence?",target); if(v&&+v>0){ pushUndo(); target=+v; renderChips(); scheduleSave(); } };
 $("#btnShuffle").onclick=()=>{
+  pushUndo();
   const s=seq();
   for(let i=s.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [s[i],s[j]]=[s[j],s[i]]; }
   photos=[...s, ...photos.filter(p=>p.status!=='seq')];
@@ -358,23 +483,54 @@ $("#btnShuffle").onclick=()=>{
 };
 $("#navPrev").onclick=()=>selectByOffset(-1);
 $("#navNext").onclick=()=>selectByOffset(1);
+$("#btnZoom").onclick=cycleZoom;
+$("#btnFullscreen").onclick=toggleFullscreen;
+$("#btnRejectCollapse").onclick=toggleRejectCollapse;
 
-function wireLane(sel, onLaneDrop){
+document.addEventListener('fullscreenchange', ()=>{
+  const btn=$("#btnFullscreen");
+  if(btn) btn.textContent = document.fullscreenElement ? '⤢ Exit' : '⛶ Full';
+});
+
+function wireLane(sel, onLaneDrop, opts={}){
   const lane=$(sel);
-  lane.addEventListener("dragover",e=>{ if(!dragId)return; e.preventDefault(); lane.classList.add("dropready"); });
-  lane.addEventListener("dragleave",e=>{ if(!lane.contains(e.relatedTarget)) lane.classList.remove("dropready"); });
-  lane.addEventListener("drop",e=>{ if(!dragId)return; e.preventDefault(); lane.classList.remove("dropready"); onLaneDrop(dragId); });
+  lane.addEventListener("dragover",e=>{
+    if(!dragId) return;
+    e.preventDefault();
+    lane.classList.add("dropready");
+    if(opts.rejectHint) document.body.classList.add('reject-drag-hover');
+  });
+  lane.addEventListener("dragleave",e=>{
+    if(!lane.contains(e.relatedTarget)){
+      lane.classList.remove("dropready");
+      if(opts.rejectHint) document.body.classList.remove('reject-drag-hover');
+    }
+  });
+  lane.addEventListener("drop",e=>{
+    if(!dragId) return;
+    e.preventDefault();
+    lane.classList.remove("dropready");
+    if(opts.rejectHint) document.body.classList.remove('reject-drag-hover');
+    onLaneDrop(dragId);
+  });
 }
 wireLane("#laneSelected", id=>setBucket(id,'seq'));
 wireLane("#laneSource",   id=>setBucket(id,'src'));
-wireLane("#laneReject",   id=>setBucket(id,'cut'));
+wireLane("#laneReject",   id=>setBucket(id,'cut'), {rejectHint:true});
 
 document.addEventListener("keydown",e=>{
   if(e.target.tagName==="INPUT") return;
-  if(e.key==="Escape"){ document.querySelectorAll('.overlay.show').forEach(o=>{ if(o.id!=='picker'||photos.length) o.classList.remove('show'); }); return; }
+  if(e.ctrlKey && e.key==='z'){ e.preventDefault(); undo(); return; }
+  if(e.key==="Escape"){
+    if(document.fullscreenElement){ document.exitFullscreen(); return; }
+    document.querySelectorAll('.overlay.show').forEach(o=>{ if(o.id!=='picker'||photos.length) o.classList.remove('show'); });
+    return;
+  }
   switch(e.key){
     case "ArrowRight": selectByOffset(1); e.preventDefault(); break;
     case "ArrowLeft":  selectByOffset(-1); e.preventDefault(); break;
+    case "ArrowUp":    keyboardSelect(); e.preventDefault(); break;
+    case "ArrowDown":  keyboardReject(); e.preventDefault(); break;
     case "[": nudge(-1); e.preventDefault(); break;
     case "]": nudge(1); e.preventDefault(); break;
     case "Home": jump('home'); e.preventDefault(); break;
