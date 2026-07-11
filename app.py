@@ -4,7 +4,7 @@ Photo Sequencer — local web app (Version 2: three trays).
 Sort & cull a large photo folder down to a target count, sequencing and
 eliminating at the same time. Images stay on disk: the browser never uploads
 anything. This Flask backend reads the folder the user picks, serves cached
-thumbnails, and persists everything in a per-session JSON file so a refresh
+thumbnails and compressed previews, and persists everything in a per-session JSON file so a refresh
 (or coming back to the same URL later) restores the full curation state.
 
 Sessions:
@@ -39,7 +39,11 @@ app = Flask(__name__)
 
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif", ".heic"}
 THUMB_DIR = ".photo-sequencer-thumbs"         # thumbnail cache inside the chosen folder
-THUMB_MAX = 400                               # px, longest edge
+PREVIEW_DIR = ".photo-sequencer-previews"     # preview cache inside the chosen folder
+THUMB_MAX = 144                               # px, longest edge (2× the 72px strip cells)
+THUMB_QUALITY = 72
+PREVIEW_MAX = 1280                            # px, longest edge — enough for on-screen review
+PREVIEW_QUALITY = 78
 STATE_VERSION = 2
 
 APP_DIR = Path(__file__).resolve().parent
@@ -151,34 +155,59 @@ def build_photo_list(sid: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
-# Thumbnails
+# Image cache (thumbnails + previews)
 # --------------------------------------------------------------------------- #
-def thumb_cache_dir(folder: Path) -> Path:
-    d = folder / THUMB_DIR
+def _cache_dir(folder: Path, subdir: str) -> Path:
+    d = folder / subdir
     d.mkdir(exist_ok=True)
     return d
 
 
-def get_thumbnail(folder: Path, name: str) -> Path:
-    src = folder / name
-    if not src.exists():
-        abort(404)
-    cache = thumb_cache_dir(folder)
-    st = src.stat()
-    key = f"{Path(name).stem}_{int(st.st_mtime)}_{st.st_size}.jpg"
-    dst = cache / key
-    if dst.exists():
-        return dst
+def _cache_key(name: str, st) -> str:
+    return f"{Path(name).stem}_{int(st.st_mtime)}_{st.st_size}.jpg"
+
+
+def _make_jpeg(src: Path, dst: Path, max_edge: int, quality: int,
+               resample=Image.Resampling.BILINEAR) -> bool:
+    """Downscale *src* to a cached JPEG. Returns False on failure."""
     try:
         with Image.open(src) as im:
             im = ImageOps.exif_transpose(im)
-            im.thumbnail((THUMB_MAX, THUMB_MAX))
+            # draft() asks decoders to skip pixels we won't need (big win on Pi)
+            if max(im.size) > max_edge * 2:
+                im.draft("RGB", (max_edge, max_edge))
+            im.thumbnail((max_edge, max_edge), resample)
             if im.mode not in ("RGB", "L"):
                 im = im.convert("RGB")
-            im.save(dst, "JPEG", quality=82)
+            im.save(dst, "JPEG", quality=quality, optimize=True, subsampling=2)
+        return True
     except Exception:
-        return src
-    return dst
+        return False
+
+
+def _get_cached_image(folder: Path, name: str, subdir: str,
+                      max_edge: int, quality: int,
+                      resample=Image.Resampling.BILINEAR) -> Path:
+    src = folder / name
+    if not src.exists():
+        abort(404)
+    cache = _cache_dir(folder, subdir)
+    st = src.stat()
+    dst = cache / _cache_key(name, st)
+    if dst.exists():
+        return dst
+    if _make_jpeg(src, dst, max_edge, quality, resample):
+        return dst
+    return src
+
+
+def get_thumbnail(folder: Path, name: str) -> Path:
+    return _get_cached_image(folder, name, THUMB_DIR, THUMB_MAX, THUMB_QUALITY)
+
+
+def get_preview(folder: Path, name: str) -> Path:
+    return _get_cached_image(folder, name, PREVIEW_DIR, PREVIEW_MAX, PREVIEW_QUALITY,
+                             Image.Resampling.BILINEAR)
 
 
 # --------------------------------------------------------------------------- #
@@ -315,8 +344,17 @@ def api_thumb(sid, name):
     return send_file(get_thumbnail(folder, name), mimetype="image/jpeg", max_age=86400)
 
 
+@app.route("/api/preview/<sid>/<path:name>")
+def api_preview(sid, name):
+    folder = session_folder(sid)
+    if not is_image(name):
+        abort(404)
+    return send_file(get_preview(folder, name), mimetype="image/jpeg", max_age=86400)
+
+
 @app.route("/api/full/<sid>/<path:name>")
 def api_full(sid, name):
+    """Original file on disk (export / download only — not used in the UI)."""
     folder = session_folder(sid)
     src = folder / name
     if not src.exists() or not is_image(name):
@@ -360,4 +398,4 @@ def api_export():
 
 if __name__ == "__main__":
     print("\n  📷 Photo Sequencer running at  http://127.0.0.1:5000\n")
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False)

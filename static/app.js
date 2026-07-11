@@ -8,8 +8,8 @@ let target = 500;
 let cutCounter = 0;
 let sessionId = null;   // set when a folder is opened or a session is restored
 
-const thumbURL = name => `/api/thumb/${sessionId}/${encodeURIComponent(name)}`;
-const fullURL  = name => `/api/full/${sessionId}/${encodeURIComponent(name)}`;
+const thumbURL   = name => `/api/thumb/${sessionId}/${encodeURIComponent(name)}`;
+const previewURL = name => `/api/preview/${sessionId}/${encodeURIComponent(name)}`;
 
 /* ------------------------------------------------------------------ */
 /* API                                                                */
@@ -163,7 +163,7 @@ function buildCell(p, label, extraClass){
 function renderPreview(){
   const p=byId(currentId); const img=$("#bigImg");
   if(!p){ img.removeAttribute('src'); $("#pos").textContent=''; $("#fname").textContent = photos.length?'':'No photos in this folder'; renderActions(null); return; }
-  img.src=fullURL(p.name);
+  img.src=previewURL(p.name);
   $("#fname").textContent=p.name;
   let label;
   if(p.status==='seq'){ const l=seq(); label=`Selected · #${l.findIndex(x=>x.id===p.id)+1} of ${l.length}`; }
