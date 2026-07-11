@@ -33,6 +33,7 @@ from flask import (Flask, abort, jsonify, redirect, render_template, request,
 
 try:
     from PIL import Image, ImageOps
+    from PIL.ExifTags import IFD
 except ImportError:  # pragma: no cover
     raise SystemExit("Pillow is required. Install with:  pip install pillow")
 
@@ -72,13 +73,23 @@ def list_images(folder: Path):
     return names
 
 
-# EXIF tag ids (Pillow uses numeric ids, same as exiftool's DateTimeOriginal)
-_EXIF_ORIGINAL = 36867
-_EXIF_DATETIME = 306
+# EXIF tag ids — DateTimeOriginal lives in the Exif sub-IFD, not the root IFD.
+_EXIF_ORIGINAL = 36867      # DateTimeOriginal
+_EXIF_DIGITIZED = 36868     # DateTimeDigitized
+_EXIF_DATETIME = 306        # DateTime
+_EXIF_SUBSEC_ORIGINAL = 37521
+UPLOAD_SORT_VERSION = 2     # bump to re-sort sessions sorted with the old logic
 
 
 def _parse_exif_datetime(value) -> datetime | None:
-    if not value or not isinstance(value, str):
+    if not value:
+        return None
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", errors="ignore")
+        except Exception:
+            return None
+    if not isinstance(value, str):
         return None
     for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%d %H:%M:%S"):
         try:
@@ -88,16 +99,48 @@ def _parse_exif_datetime(value) -> datetime | None:
     return None
 
 
+def _subsec_sort_key(value) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, bytes):
+        try:
+            value = value.decode("utf-8", errors="ignore")
+        except Exception:
+            return 0
+    digits = "".join(c for c in str(value) if c.isdigit())
+    return int(digits[:6]) if digits else 0
+
+
+def _read_exif_capture_key(exif) -> tuple[datetime, int] | None:
+    """Return (datetime, subsec) from EXIF, matching exiftool DateTimeOriginal."""
+    if not exif:
+        return None
+    ifds = [exif]
+    try:
+        ifds.append(exif.get_ifd(IFD.Exif))
+    except Exception:
+        pass
+
+    for ifd in ifds:
+        dt = _parse_exif_datetime(ifd.get(_EXIF_ORIGINAL))
+        if dt:
+            return dt, _subsec_sort_key(ifd.get(_EXIF_SUBSEC_ORIGINAL))
+
+    for ifd in ifds:
+        for tag in (_EXIF_DIGITIZED, _EXIF_DATETIME):
+            dt = _parse_exif_datetime(ifd.get(tag))
+            if dt:
+                return dt, 0
+    return None
+
+
 def image_capture_datetime(path: Path) -> datetime:
-    """Best capture timestamp for sorting: DateTimeOriginal → DateTime → mtime."""
+    """Best capture timestamp for sorting: DateTimeOriginal → other EXIF → mtime."""
     try:
         with Image.open(path) as im:
-            exif = im.getexif()
-            if exif:
-                for tag in (_EXIF_ORIGINAL, _EXIF_DATETIME):
-                    dt = _parse_exif_datetime(exif.get(tag))
-                    if dt:
-                        return dt
+            key = _read_exif_capture_key(im.getexif())
+            if key:
+                return key[0]
     except Exception:
         pass
     try:
@@ -106,8 +149,22 @@ def image_capture_datetime(path: Path) -> datetime:
         return datetime.min
 
 
+def image_capture_sort_key(path: Path) -> tuple:
+    try:
+        with Image.open(path) as im:
+            key = _read_exif_capture_key(im.getexif())
+            if key:
+                return (key[0], key[1], path.name.lower())
+    except Exception:
+        pass
+    try:
+        return (datetime.fromtimestamp(path.stat().st_mtime), 0, path.name.lower())
+    except OSError:
+        return (datetime.min, 0, path.name.lower())
+
+
 def sort_names_by_capture_time(folder: Path, names: list[str]) -> list[str]:
-    return sorted(names, key=lambda n: (image_capture_datetime(folder / n), n.lower()))
+    return sorted(names, key=lambda n: image_capture_sort_key(folder / n))
 
 
 def ensure_upload_order(sess: dict, folder: Path, names: list[str]) -> bool:
@@ -119,7 +176,7 @@ def ensure_upload_order(sess: dict, folder: Path, names: list[str]) -> bool:
     decisions = sess.setdefault("decisions", {})
     changed = False
 
-    if sess.get("upload_sort") == "exif":
+    if sess.get("upload_sort") == UPLOAD_SORT_VERSION:
         missing = [n for n in names if "u" not in decisions.get(n, {})]
         if not missing:
             return False
@@ -132,7 +189,7 @@ def ensure_upload_order(sess: dict, folder: Path, names: list[str]) -> bool:
     for i, name in enumerate(sort_names_by_capture_time(folder, names)):
         decisions.setdefault(name, {})["u"] = i
         changed = True
-    sess["upload_sort"] = "exif"
+    sess["upload_sort"] = UPLOAD_SORT_VERSION
     return changed
 
 
